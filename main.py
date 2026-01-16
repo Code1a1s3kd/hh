@@ -1,23 +1,8 @@
-import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import yt_dlp
 
 app = FastAPI(title="YouTube Stream API")
-
-# ====== إعداد الكوكيز من متغيرات البيئة ======
-# نقوم بكتابة الكوكيز في ملف عند بدء التشغيل إذا كانت موجودة في الـ Environment Variables
-COOKIES_FILE_PATH = "cookies.txt"
-COOKIES_CONTENT = os.getenv("COOKIES_CONTENT")
-
-if COOKIES_CONTENT:
-    with open(COOKIES_FILE_PATH, "w") as f:
-        f.write(COOKIES_CONTENT)
-    print("✅ Cookies file created from environment variable.")
-else:
-    print("⚠️ No COOKIES_CONTENT found. Trying to run without cookies (might fail for some videos).")
-
-# ==========================================
 
 class FormatRequest(BaseModel):
     url: str
@@ -27,20 +12,12 @@ class StreamRequest(BaseModel):
     video_format_id: str | None = None
     audio_format_id: str | None = None
 
-def get_ydl_opts():
-    opts = {
-        "quiet": True,
-        "noplaylist": True,
-    }
-    # إذا كان ملف الكوكيز موجوداً، نستخدمه
-    if os.path.exists(COOKIES_FILE_PATH):
-        opts["cookiefile"] = COOKIES_FILE_PATH
-    return opts
-
+# ====== 1) Get formats (نفس الكود السابق مع تحسين بسيط) ======
 @app.post("/formats")
 def get_formats(data: FormatRequest):
     try:
-        ydl_opts = get_ydl_opts()
+        # يفضل استخدام 'noplaylist' لتسريع العملية
+        ydl_opts = {"quiet": True, "noplaylist": True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(data.url, download=False)
 
@@ -53,9 +30,9 @@ def get_formats(data: FormatRequest):
                 video_formats.append({
                     "format_id": f["format_id"],
                     "height": f.get("height"),
-                    "note": f.get("format_note"),
+                    "note": f.get("format_note"), # مفيد لمعرفة الجودة
                     "ext": f.get("ext"),
-                    "has_audio": f.get("acodec") != "none"
+                    "has_audio": f.get("acodec") != "none" # مهم جداً
                 })
 
             # Audio
@@ -78,10 +55,15 @@ def get_formats(data: FormatRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# ====== 2) Get direct stream URL (التصحيح هنا) ======
 @app.post("/stream")
 def get_stream(data: StreamRequest):
     try:
-        ydl_opts = get_ydl_opts()
+        ydl_opts = {
+    "quiet": True,
+    "noplaylist": True,
+    "cookiefile": "cookies.txt"  # إضافة هذا السطر
+}
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(data.url, download=False)
@@ -90,25 +72,32 @@ def get_stream(data: StreamRequest):
         video_url = None
         audio_url = None
 
+        # البحث عن رابط الفيديو المطلوب
         if data.video_format_id:
             for f in formats:
                 if f["format_id"] == data.video_format_id:
                     video_url = f["url"]
                     break
         
+        # البحث عن رابط الصوت المطلوب
         if data.audio_format_id:
             for f in formats:
                 if f["format_id"] == data.audio_format_id:
                     audio_url = f["url"]
                     break
 
+        # حالة خاصة: إذا لم يحدد المستخدم فورمات، نرجع أفضل شيء مدمج (progressive) إن وجد
         if not video_url and not audio_url:
-             return {"message": "Please specify format_ids"}
+             # هذا الخيار يعيد رابط واحد يحتوي صوت وصورة (عادة جودة 720 أو 360)
+             # لكنه نادراً ما يكون متاحاً للجودات العالية 1080 وما فوق
+             return {"message": "Please specify format_ids or handle default logic"}
 
         return {
             "video_stream_url": video_url,
-            "audio_stream_url": audio_url
+            "audio_stream_url": audio_url,
+            "note": "For high quality, client must play video and audio streams together."
         }
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+        
